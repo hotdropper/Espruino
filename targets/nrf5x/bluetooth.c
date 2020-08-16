@@ -307,6 +307,53 @@ int jsble_exec_pending(IOEvent *event) {
      jsvUnLock(v);
      break;
    }
+#ifdef USE_NFC
+   case BLEP_NFC_STATUS:
+     bleQueueEventAndUnLock(data ? JS_EVENT_PREFIX"NFCon" : JS_EVENT_PREFIX"NFCoff", 0);
+     break;
+   case BLEP_NFC_TX:
+     bleQueueEventAndUnLock(JS_EVENT_PREFIX"NFCtx", 0);
+     break;
+   case BLEP_NFC_RX: {
+     /* try to fetch NfcData data */
+     JsVar *nfcData = jsvObjectGetChild(execInfo.hiddenRoot, "NfcData", 0);
+     if(nfcData) {
+       /* success - handle request internally */
+       JSV_GET_AS_CHAR_ARRAY(nfcDataPtr, nfcDataLen, nfcData);
+       jsvUnLock(nfcData);
+
+       /* check data, on error let request go into timeout - reader will retry. */
+       if (!nfcDataPtr || !nfcDataLen) {
+         break;
+       }
+
+       /* check rx data length and read block command code (0x30) */
+       if(bufferLen < 2 || buffer[0] != 0x30) {
+         jsble_nfc_send_rsp(0, 0); /* switch to rx */
+         break;
+       }
+
+       /* fetch block index (addressing is done in multiples of 4 byte */
+       size_t idx = buffer[1] * 4;
+
+       /* assemble 16 byte block */
+       uint8_t buf[16]; memset(buf, '\0', 16);
+       if(idx + 16 < nfcDataLen) {
+         memcpy(buf, nfcDataPtr + idx, 16);
+       } else
+       if(idx < nfcDataLen) {
+         memcpy(buf, nfcDataPtr + idx, nfcDataLen - idx);
+       }
+       /* send response */
+       jsble_nfc_send(buf, 16);
+     } else {
+       /* no NfcData available, fire js-event */
+       bleQueueEventAndUnLock(JS_EVENT_PREFIX"NFCrx",
+           jsvNewArrayBufferWithData(bufferLen, buffer));
+     }
+     break;
+   }
+#endif
    case BLEP_CONNECTED: {
      assert(bufferLen == sizeof(ble_gap_addr_t));
      ble_gap_addr_t *peer_addr = (ble_gap_addr_t*)buffer;
@@ -539,53 +586,6 @@ int jsble_exec_pending(IOEvent *event) {
    case BLEP_TASK_BONDING: {
      if (data) bleCompleteTaskSuccess(BLETASK_BONDING, 0);
      else bleCompleteTaskFailAndUnLock(BLETASK_BONDING, jsvNewFromString("Securing failed"));
-     break;
-   }
-#endif
-#ifdef USE_NFC
-   case BLEP_NFC_STATUS:
-     bleQueueEventAndUnLock(data ? JS_EVENT_PREFIX"NFCon" : JS_EVENT_PREFIX"NFCoff", 0);
-     break;
-   case BLEP_NFC_TX:
-     bleQueueEventAndUnLock(JS_EVENT_PREFIX"NFCtx", 0);
-     break;
-   case BLEP_NFC_RX: {
-     /* try to fetch NfcData data */
-     JsVar *nfcData = jsvObjectGetChild(execInfo.hiddenRoot, "NfcData", 0);
-     if(nfcData) {
-       /* success - handle request internally */
-       JSV_GET_AS_CHAR_ARRAY(nfcDataPtr, nfcDataLen, nfcData);
-       jsvUnLock(nfcData);
-
-       /* check data, on error let request go into timeout - reader will retry. */
-       if (!nfcDataPtr || !nfcDataLen) {
-         break;
-       }
-
-       /* check rx data length and read block command code (0x30) */
-       if(bufferLen < 2 || buffer[0] != 0x30) {
-         jsble_nfc_send_rsp(0, 0); /* switch to rx */
-         break;
-       }
-
-       /* fetch block index (addressing is done in multiples of 4 byte */
-       size_t idx = buffer[1] * 4;
-
-       /* assemble 16 byte block */
-       uint8_t buf[16]; memset(buf, '\0', 16);
-       if(idx + 16 < nfcDataLen) {
-         memcpy(buf, nfcDataPtr + idx, 16);
-       } else
-       if(idx < nfcDataLen) {
-         memcpy(buf, nfcDataPtr + idx, nfcDataLen - idx);
-       }
-       /* send response */
-       jsble_nfc_send(buf, 16);
-     } else {
-       /* no NfcData available, fire js-event */
-       bleQueueEventAndUnLock(JS_EVENT_PREFIX"NFCrx",
-           jsvNewArrayBufferWithData(bufferLen, buffer));
-     }
      break;
    }
 #endif
